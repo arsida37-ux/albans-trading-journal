@@ -287,6 +287,8 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
 .shot .tag{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(transparent,rgba(0,0,0,.88));padding:14px 7px 5px;font-size:9px;letter-spacing:.08em;color:#D6DCE6;text-align:center}
 .shot .x{position:absolute;top:5px;right:5px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.8);color:#fff;font-size:12px;text-align:center;line-height:20px;z-index:2}
 .shot .plus{font-size:19px;font-weight:300;color:var(--line2)}
+.diag{margin-top:12px;padding:12px 14px;background:var(--surf2);border:1px solid var(--line);border-radius:9px;
+  font-family:var(--mono);font-size:11px;line-height:1.65;color:var(--dim);white-space:pre-wrap;word-break:break-word;overflow-x:auto}
 .shot .dhint{font-size:8px;letter-spacing:.06em;opacity:.55;text-transform:none}
 .shots.dz{border-radius:11px;transition:.14s}
 .shots.dz.over{outline:2px dashed var(--acc);outline-offset:5px;background:var(--acc-d)}
@@ -342,11 +344,13 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
 .cal .dv{font-size:8.5px;color:var(--red);font-weight:700;margin-top:1px}
 
 /* day-log: large stacked screenshots, one per trade */
-.dlshots{display:grid;grid-template-columns:repeat(var(--n,1),1fr);gap:12px}
-@media (max-width:640px){ .dlshots{grid-template-columns:repeat(2,1fr)} }
-@media (max-width:420px){ .dlshots{grid-template-columns:1fr} }
-.dlshot{border-radius:12px;overflow:hidden;border:1px solid var(--line2);cursor:pointer;background:var(--surf2)}
-.dlshot img{width:100%;height:100%;aspect-ratio:4/3;object-fit:cover;display:block}
+/* thumbnails are a fixed size whatever the count, so one shot does not fill the page.
+   click opens the lightbox for the real thing */
+.dlshots{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;max-width:780px}
+@media (max-width:560px){ .dlshots{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))} }
+.dlshot{border-radius:10px;overflow:hidden;border:1px solid var(--line2);cursor:zoom-in;background:var(--surf2);transition:.14s}
+.dlshot:hover{border-color:var(--acc)}
+.dlshot img{width:100%;aspect-ratio:16/10;object-fit:cover;display:block}
 .grow{flex:1}
 .dlcard{overflow:hidden}
 .dlgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
@@ -457,21 +461,25 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const DB = (() => {
   const mem = {};              /* write-through mirror, so a failed read still has something to serve */
   const pending = new Map();   /* writes that never reached the server, replayed when it comes back */
-  let degraded = false;
+  let degraded = false, lastErr = null;
 
   const isFatal = e => /quota|storage|exceed|too large|payload/i.test((e?.name || "") + " " + (e?.message || ""));
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const note = e => {
+    lastErr = [e?.code, e?.message || String(e), e?.details, e?.hint].filter(Boolean).join(" · ");
+    return e;
+  };
 
   async function upsert(k, v) {
     const { error } = await sb.from("journal_kv").upsert({ key: k, value: v, updated_at: new Date().toISOString() });
-    if (error) throw error;
+    if (error) throw note(error);
   }
   /* a dropped packet is not a broken database: retry before giving up on the network */
   async function attempt(fn, tries = 3) {
     let last;
     for (let i = 0; i < tries; i++) {
       try { const r = await fn(); degraded = false; return r; }
-      catch (e) { last = e; if (isFatal(e)) throw e; if (i < tries - 1) await sleep(250 * (i + 1)); }
+      catch (e) { last = note(e); if (isFatal(e)) throw e; if (i < tries - 1) await sleep(250 * (i + 1)); }
     }
     throw last;
   }
@@ -494,7 +502,19 @@ const DB = (() => {
   return {
     get isMemory() { return degraded; },
     get unsynced() { return pending.size; },
+    get lastError() { return lastErr; },
     flush,
+    /* bypasses the mirror and the retry loop: used only by the diagnostic */
+    async probe(k, v) {
+      if (v === undefined) {
+        const { data, error } = await sb.from("journal_kv").select("value").eq("key", k).maybeSingle();
+        if (error) throw note(error);
+        return data ? data.value : undefined;
+      }
+      const { error } = await sb.from("journal_kv").upsert({ key: k, value: v, updated_at: new Date().toISOString() });
+      if (error) throw note(error);
+    },
+    async probeDel(k) { await sb.from("journal_kv").delete().eq("key", k); },
     async get(k) {
       try {
         const r = await attempt(async () => {
@@ -923,6 +943,8 @@ async function addShots(files) {
     for (const f of take) draft.shots.push(await putShot(await readImage(f)));
   } catch (err) { alert(err.message); }
   renderSheet();
+  if (DB.isMemory)
+    alert("Le immagini non sono arrivate al database e per ora restano solo in questa scheda.\n\nApri Impostazioni, Diagnostica archiviazione, ed esegui il test.");
   if (skipped) alert(`Aggiunte ${take.length}. Le altre ${skipped} superano il limite di ${MAX_SHOTS}.`);
 }
 
@@ -1574,7 +1596,7 @@ function dayLogCard(t) {
       </div>
       ${q ? `<div class="flag ${QTAG[q]}" style="margin-top:14px"><span><b>${esc(QUAD[q].t)}.</b> ${esc(QUAD[q].d)}</span></div>` : ""}
       ${v.map(x => `<div class="flag" style="margin-top:8px"><span>${esc(x)}</span></div>`).join("")}
-      ${ks.length ? `<div class="dlshots" style="margin-top:30px;--n:${Math.min(3, ks.length)}">${ks.map((k, i) => {
+      ${ks.length ? `<div class="dlshots" style="margin-top:26px">${ks.map((k, i) => {
           const src = shotURL(k);
           if (src) return `<div class="dlshot" data-viewshot="${esc(k)}"><img src="${src}" alt="Screenshot ${i + 1}"></div>`;
           return `<div class="dlshot ph">${shotMissing(k) ? "Immagine non trovata" : '<span class="spin"></span>'}</div>`;
@@ -1684,6 +1706,13 @@ function viewCfg() {
     `<div class="lbl">Chiave API</div><input type="password" data-c="apiKey" value="${esc(c.apiKey)}" placeholder="sk-ant-...">
      <div class="tiny mut" style="margin-top:9px">Serve solo per la lettura degli screenshot e le analisi scritte. Resta su questo dispositivo, in chiaro nel browser.</div>`,
     c.apiKey ? "Configurata" : "Non configurata");
+
+  h += card("Diagnostica archiviazione",
+    `<div class="tiny mut" style="margin-bottom:11px">Scrive e rilegge una riga di prova, poi una delle dimensioni di uno screenshot. Serve per capire se le immagini arrivano davvero al database.</div>
+     <button class="btn ghost" data-diag ${busy.diag ? "disabled" : ""}>${busy.diag ? '<span class="spin"></span> Test in corso' : "Esegui il test"}</button>
+     ${S.diag ? `<pre class="diag">${esc(S.diag)}</pre>` : ""}
+     ${DB.lastError ? `<div class="flag" style="margin-top:11px"><span>Ultimo errore del database: ${esc(DB.lastError)}</span></div>` : ""}`,
+    DB.isMemory ? `${DB.unsynced} non sincronizzate` : "Connesso");
 
   h += card("Dati",
     `<div class="row" style="flex-wrap:wrap">
@@ -1844,6 +1873,43 @@ document.addEventListener("click", async e => {
   }
 
   /* data */
+  if ("diag" in D) {
+    busy.diag = true; S.diag = null; render();
+    const L = [];
+    const key = "diag:" + uid();
+    const step = async (label, fn) => {
+      const t0 = performance.now();
+      try { const r = await fn(); L.push(`OK   ${label}  (${Math.round(performance.now() - t0)}ms)${r ? " " + r : ""}`); return true; }
+      catch (e) { L.push(`FAIL ${label}\n     ${[e?.code, e?.message, e?.details, e?.hint].filter(Boolean).join(" · ")}`); return false; }
+    };
+    /* a tiny row proves the table is reachable and writable at all */
+    let ok = await step("scrittura riga piccola", () => DB.probe(key, { hello: 1 }));
+    if (ok) await step("rilettura riga piccola", async () => {
+      const v = await DB.probe(key);
+      if (!v || v.hello !== 1) throw new Error("riletta ma vuota o diversa");
+    });
+    /* then one the size of a real screenshot, which is what actually fails */
+    const big = "data:image/jpeg;base64," + "A".repeat(320000);
+    const okBig = await step(`scrittura riga grande (${Math.round(big.length / 1024)} KB)`, () => DB.probe(key + ":big", big));
+    if (okBig) await step("rilettura riga grande", async () => {
+      const v = await DB.probe(key + ":big");
+      if (typeof v !== "string") throw new Error("riletta ma non è una stringa");
+      if (v.length !== big.length) throw new Error(`troncata: scritti ${big.length}, riletti ${v.length}`);
+      return `${Math.round(v.length / 1024)} KB integri`;
+    });
+    /* and finally whether the images this journal already references exist */
+    const keys = S.trades.flatMap(shotKeys).filter(k => k && !String(k).startsWith("data:"));
+    if (keys.length) {
+      let found = 0;
+      for (const k of keys.slice(0, 40)) { try { if (await DB.probe("img:" + k)) found++; } catch (_) { } }
+      const n = Math.min(keys.length, 40);
+      L.push(`${found === n ? "OK  " : "FAIL"} immagini presenti nel database: ${found} su ${n} controllate`);
+    } else L.push("--   nessuna immagine referenziata dai trade");
+
+    await DB.probeDel(key); await DB.probeDel(key + ":big");
+    S.diag = L.join("\n");
+    busy.diag = false; return render();
+  }
   if ("export" in D) {
     const imgs = {};
     for (const t of S.trades)
