@@ -287,6 +287,12 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
 .shot .tag{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(transparent,rgba(0,0,0,.88));padding:14px 7px 5px;font-size:9px;letter-spacing:.08em;color:#D6DCE6;text-align:center}
 .shot .x{position:absolute;top:5px;right:5px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.8);color:#fff;font-size:12px;text-align:center;line-height:20px;z-index:2}
 .shot .plus{font-size:19px;font-weight:300;color:var(--line2)}
+.shot .dhint{font-size:8px;letter-spacing:.06em;opacity:.55;text-transform:none}
+.shots.dz{border-radius:11px;transition:.14s}
+.shots.dz.over{outline:2px dashed var(--acc);outline-offset:5px;background:var(--acc-d)}
+.shots.dz.over .shot{border-color:var(--acc);color:var(--acc-hi)}
+.dlshot.ph{display:flex;align-items:center;justify-content:center;aspect-ratio:16/10;border:1px dashed var(--line2);
+  border-radius:10px;background:var(--surf2);font-size:11px;color:var(--dim2);letter-spacing:.04em}
 
 /* trade list */
 .daycard{margin-bottom:16px}
@@ -438,7 +444,7 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
   </main>
 </div>
 <div class="scrim" id="scrim"></div>
-<input type="file" id="picker" accept="image/*" style="display:none">
+<input type="file" id="picker" accept="image/*" multiple style="display:none">
 <input type="file" id="filepicker" accept="application/json,.json" style="display:none">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
@@ -449,41 +455,70 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const DB = (() => {
-  let mem = {}, memMode = false;
+  const mem = {};              /* write-through mirror, so a failed read still has something to serve */
+  const pending = new Map();   /* writes that never reached the server, replayed when it comes back */
+  let degraded = false;
+
+  const isFatal = e => /quota|storage|exceed|too large|payload/i.test((e?.name || "") + " " + (e?.message || ""));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function upsert(k, v) {
+    const { error } = await sb.from("journal_kv").upsert({ key: k, value: v, updated_at: new Date().toISOString() });
+    if (error) throw error;
+  }
+  /* a dropped packet is not a broken database: retry before giving up on the network */
+  async function attempt(fn, tries = 3) {
+    let last;
+    for (let i = 0; i < tries; i++) {
+      try { const r = await fn(); degraded = false; return r; }
+      catch (e) { last = e; if (isFatal(e)) throw e; if (i < tries - 1) await sleep(250 * (i + 1)); }
+    }
+    throw last;
+  }
+  async function flush() {
+    if (!pending.size) return;
+    for (const [k, v] of [...pending]) {
+      try { await upsert(k, v); pending.delete(k); }
+      catch (_) { degraded = true; return; }   /* still down, keep the rest queued */
+    }
+    degraded = false;                          /* backlog cleared, we are in sync again */
+  }
+  async function write(k, v, strict) {
+    mem[k] = v;
+    try { await attempt(() => upsert(k, v)); pending.delete(k); await flush(); }
+    catch (e) {
+      if (strict && isFatal(e)) throw e;
+      degraded = true; pending.set(k, v);   /* keep it, replay it later */
+    }
+  }
   return {
-    get isMemory() { return memMode; },
+    get isMemory() { return degraded; },
+    get unsynced() { return pending.size; },
+    flush,
     async get(k) {
-      if (memMode) return mem[k];
       try {
-        const { data, error } = await sb.from("journal_kv").select("value").eq("key", k).maybeSingle();
-        if (error) throw error;
-        return data ? data.value : undefined;
-      } catch (e) { memMode = true; return mem[k]; }
+        const r = await attempt(async () => {
+          const { data, error } = await sb.from("journal_kv").select("value").eq("key", k).maybeSingle();
+          if (error) throw error;
+          return data ? data.value : undefined;
+        });
+        flush();
+        return r;
+      } catch (e) { degraded = true; return mem[k]; }
     },
-    async set(k, v) {
-      if (memMode) { mem[k] = v; return; }
-      try {
-        const { error } = await sb.from("journal_kv").upsert({ key: k, value: v, updated_at: new Date().toISOString() });
-        if (error) throw error;
-      } catch (e) { memMode = true; mem[k] = v; }
-    },
-    /* images: a full disk must surface, but an unavailable database falls back like any other write */
-    async setStrict(k, v) {
-      if (memMode) { mem[k] = v; return; }
-      try {
-        const { error } = await sb.from("journal_kv").upsert({ key: k, value: v, updated_at: new Date().toISOString() });
-        if (error) throw error;
-      } catch (e) {
-        if (e && /quota|storage|exceed/i.test((e.name || "") + " " + (e.message || ""))) throw e;
-        memMode = true; mem[k] = v;
-      }
-    },
+    set: (k, v) => write(k, v, false),
+    /* images: a full disk must surface so the user can free space; a flaky network just queues */
+    setStrict: (k, v) => write(k, v, true),
     async del(k) {
-      if (memMode) { delete mem[k]; return; }
-      try { await sb.from("journal_kv").delete().eq("key", k); } catch (e) { }
+      delete mem[k]; pending.delete(k);
+      try { await attempt(async () => { const { error } = await sb.from("journal_kv").delete().eq("key", k); if (error) throw error; }); }
+      catch (_) { degraded = true; }
     }
   };
 })();
+/* retry the backlog as soon as the machine looks online again */
+window.addEventListener("online", () => DB.flush().then(() => render()));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) DB.flush(); });
 
 /* ============ state ============ */
 const DEFAULT_CFG = {
@@ -517,6 +552,9 @@ const shotKeys = t => {
   return (Array.isArray(s) ? s : ["contesto", "entrata", "uscita"].map(k => s[k])).filter(Boolean);
 };
 const shotURL = k => !k ? null : String(k).startsWith("data:") ? k : IMG[k] || null;
+/* keys we asked the database for and got nothing back: prevents an endless reload loop */
+const IMGMISS = new Set();
+const shotMissing = k => !!k && !String(k).startsWith("data:") && !IMG[k] && IMGMISS.has(k);
 async function putShot(dataURL) {
   const k = "s" + uid();
   try { await DB.setStrict("img:" + k, dataURL); }
@@ -527,12 +565,23 @@ async function putShot(dataURL) {
       : "Impossibile salvare l'immagine. Riprova.");
   }
   IMG[k] = dataURL;
+  IMGMISS.delete(k);
   trimCache();
   return k;
 }
+/* keys on screen right now: evicting these would make the view flicker back to placeholders */
+function pinnedKeys() {
+  const out = new Set();
+  const add = t => shotKeys(t).forEach(k => out.add(k));
+  if (draft) add(draft);
+  if (S.dayView) S.trades.filter(t => t.date === S.dayView).forEach(add);
+  return out;
+}
 function trimCache() {
-  const ks = Object.keys(IMG);
-  if (ks.length > 60) ks.slice(0, ks.length - 60).forEach(k => delete IMG[k]);
+  const pin = pinnedKeys();
+  const ks = Object.keys(IMG).filter(k => !pin.has(k));
+  const over = Object.keys(IMG).length - 60;
+  if (over > 0) ks.slice(0, over).forEach(k => delete IMG[k]);
 }
 async function dropShots(t) {
   for (const k of shotKeys(t))
@@ -544,12 +593,73 @@ async function storageInfo() {
     return { used: e.usage || 0, quota: e.quota || 0 };
   } catch (_) { return null; }
 }
-async function loadShots(t) {
-  const ks = shotKeys(t).filter(k => !String(k).startsWith("data:"));
-  await Promise.all(ks.map(async k => { if (IMG[k] === undefined) IMG[k] = (await DB.get("img:" + k)) || null; }));
+/* images are fetched lazily, so any view that shows them hydrates then repaints once */
+async function loadShots(...trades) {
+  const want = new Set();
+  trades.flat().filter(Boolean).forEach(t => shotKeys(t).forEach(k => {
+    if (k && !String(k).startsWith("data:") && !IMG[k] && !IMGMISS.has(k)) want.add(k);
+  }));
+  if (!want.size) return false;
+  let got = 0;
+  await Promise.all([...want].map(async k => {
+    try {
+      const v = await DB.get("img:" + k);
+      if (v) { IMG[k] = v; got++; } else IMGMISS.add(k);
+    } catch (_) { IMGMISS.add(k); }
+  }));
+  return got > 0;
+}
+/* which trades the current view is actually showing pictures for */
+function visibleShotTrades() {
+  const out = [];
+  if (draft) out.push(draft);
+  if (S.tab === "calendario" && S.dayView)
+    out.push(...S.trades.filter(t => t.date === S.dayView && S.dlOpen[t.id]));
+  return out;
+}
+let hydrating = false;
+async function hydrateShots() {
+  if (hydrating) return;
+  const list = visibleShotTrades();
+  if (!list.length) return;
+  hydrating = true;
+  let changed = false;
+  try { changed = await loadShots(list); }
+  finally { hydrating = false; }
+  if (changed) render();
 }
 
-const save = async () => { await DB.set("state", { cfg: S.cfg, trades: S.trades, days: S.days, va: S.va }); };
+/* every tab gets an identity so a stale one cannot silently overwrite a newer device */
+const SESSION = "w" + Math.random().toString(36).slice(2, 9);
+let stateRev = 0, saveChain = Promise.resolve(), saveTimer = null;
+
+async function doSave() {
+  if (!DB.isMemory) {
+    const meta = await DB.get("state_meta");
+    if (meta && meta.rev > stateRev && meta.by !== SESSION) {
+      const keep = confirm(
+        "Un altro dispositivo ha salvato dati più recenti di questa scheda.\n\n" +
+        "OK: tieni questa scheda e sovrascrivi l'altro dispositivo.\n" +
+        "Annulla: ricarica e riprendi dai dati più recenti.");
+      if (!keep) { location.reload(); return; }
+      stateRev = meta.rev;
+    }
+  }
+  stateRev++;
+  await DB.set("state", { cfg: S.cfg, trades: S.trades, days: S.days, va: S.va });
+  await DB.set("state_meta", { rev: stateRev, by: SESSION, at: Date.now() });
+}
+/* one writer at a time on a single row, whatever order the callers arrive in */
+function save() {
+  saveChain = saveChain.then(doSave, doSave);
+  return saveChain;
+}
+/* typing in settings fired one full-state upsert per keystroke: coalesce instead */
+function queueSave(ms = 700) {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveTimer = null; save(); }, ms);
+}
+window.addEventListener("beforeunload", () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; save(); } });
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 /* ============ helpers ============ */
@@ -557,20 +667,26 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const n = v => { const x = parseFloat(String(v).replace(",", ".")); return isFinite(x) ? x : 0; };
 const has = v => v !== "" && v != null && isFinite(parseFloat(String(v).replace(",", ".")));
-const today = () => new Date().toISOString().slice(0, 10);
-const nowHM = () => new Date().toTimeString().slice(0, 5);
+/* everything is anchored to Italian wall-clock time, whatever the device says */
+const TZ = "Europe/Rome";
+const tzFmt = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+});
+const tzNow = (d = new Date()) => tzFmt.formatToParts(d).reduce((a, p) => (a[p.type] = p.value, a), {});
+const today = () => { const p = tzNow(); return `${p.year}-${p.month}-${p.day}`; };
+const nowHM = () => { const p = tzNow(); return `${p.hour}:${p.minute}`; };
 const fmtR = r => (r >= 0 ? "+" : "") + r.toFixed(2) + "R";
 const fmtPct = v => v.toFixed(0) + "%";
-const dLabel = d => {
-  const dt = new Date(d + "T12:00:00");
-  return dt.toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" });
-};
-const dShort = d => new Date(d + "T12:00:00").toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" });
+const dLabel = d =>
+  new Date(d + "T12:00:00Z").toLocaleDateString("it-IT", { timeZone: TZ, weekday: "long", day: "numeric", month: "long" });
+const dShort = d =>
+  new Date(d + "T12:00:00Z").toLocaleDateString("it-IT", { timeZone: TZ, day: "2-digit", month: "2-digit" });
 const lc1 = s => s.charAt(0).toLowerCase() + s.slice(1);
 const avg = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 
 const hm2min = t => { const [h, m] = String(t || "0:0").split(":").map(Number); return h * 60 + m; };
-const minsNow = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const minsNow = () => { const p = tzNow(); return +p.hour * 60 + +p.minute; };
 function sessionState() {
   const a = hm2min(S.cfg.rthStart), b = hm2min(S.cfg.rthEnd), n = minsNow();
   if (n < a) return { open: false, mins: a - n, label: "Apre tra" };
@@ -687,8 +803,18 @@ const fmtM = v => (v < 0 ? "-" : "+") + "$" + Math.abs(v).toFixed(Math.abs(v) >=
 
 function inRTH(t) {
   if (!t.time) return true;
-  return t.time >= S.cfg.rthStart && t.time <= S.cfg.rthEnd;
+  const a = hm2min(S.cfg.rthStart), b = hm2min(S.cfg.rthEnd), x = hm2min(t.time);
+  if (a === b) return true;
+  return a < b ? (x >= a && x <= b) : (x >= a || x <= b); /* b < a = finestra a cavallo della mezzanotte */
 }
+const rthFlag = t => inRTH(t) ? ""
+  : `<div class="flag"><span>Fuori dalla finestra RTH (${esc(S.cfg.rthStart)}–${esc(S.cfg.rthEnd)}).</span></div>`;
+const riskFlag = t => {
+  const m = riskMoney(t), pc = riskAccountPct(t);
+  if (!m) return "";
+  const over = pc != null && pc > n(S.cfg.riskPct) + 0.05;
+  return `<div class="flag ${over ? "" : "info"}"><span>Rischio <b>$${m.toFixed(2)}</b>${pc != null ? ` · <b>${pc.toFixed(2)}%</b> del conto` : ""}${over ? `. Oltre il ${S.cfg.riskPct}% previsto.` : ""}</span></div>`;
+};
 /* auto-detected rule breaches, computed not self-reported */
 function violations(t) {
   const v = [];
@@ -783,17 +909,21 @@ function readImage(file) {
     fr.readAsDataURL(file);
   });
 }
-function pickImage() {
-  return new Promise(res => {
-    const el = $("#picker");
-    el.value = "";
-    el.onchange = async () => {
-      if (!el.files[0]) return res(null);
-      try { res(await readImage(el.files[0])); }
-      catch (e) { alert(e.message); res(null); }
-    };
-    el.click();
-  });
+/* one path for the picker, drag-and-drop and paste, so all three respect the same cap */
+async function addShots(files) {
+  if (!draft) return;
+  const imgs = [...files].filter(f => f && f.type && f.type.startsWith("image/"));
+  if (!imgs.length) return;
+  if (!Array.isArray(draft.shots)) draft.shots = shotKeys(draft);
+  const room = MAX_SHOTS - draft.shots.length;
+  if (room <= 0) return alert(`Massimo ${MAX_SHOTS} screenshot per trade.`);
+  const take = imgs.slice(0, room);
+  const skipped = imgs.length - take.length;
+  try {
+    for (const f of take) draft.shots.push(await putShot(await readImage(f)));
+  } catch (err) { alert(err.message); }
+  renderSheet();
+  if (skipped) alert(`Aggiunte ${take.length}. Le altre ${skipped} superano il limite di ${MAX_SHOTS}.`);
 }
 
 /* ============ Claude ============ */
@@ -937,9 +1067,10 @@ function render() {
   const v = { dashboard: viewOggi, calendario: viewCalendario, coach: viewCoach, cfg: viewCfg }[S.tab];
   $("#pactions").innerHTML = inDayLog ? "" : actionsFor(S.tab);
   $("#app").innerHTML = (DB.isMemory
-    ? `<div class="banner">Questa copia non salva i dati. Il browser blocca l'archiviazione da questa posizione. Scarica il file, aprilo da una cartella stabile, e usa Esporta backup regolarmente.</div>` : "")
+    ? `<div class="banner">Connessione al database non riuscita. ${DB.unsynced ? `${DB.unsynced} modifiche non ancora sincronizzate, ` : ""}i dati restano in questa scheda e vengono reinviati appena torna la connessione. Non chiudere la pagina: esporta un backup se devi farlo.</div>` : "")
     + (inDayLog ? viewDayLog(S.dayView) : v());
   if (sheet) renderSheet();
+  hydrateShots();
 }
 function actionsFor(tab) {
   if (tab === "dashboard") {
@@ -1001,12 +1132,14 @@ function shotsGrid(t, editable) {
   const tiles = ks.map((k, i) => {
     const src = shotURL(k);
     return `<div class="shot" data-viewshot="${esc(k)}">
-      ${src ? `<img src="${src}" alt="Screenshot ${i + 1}">` : `<span class="plus">?</span>`}
+      ${src ? `<img src="${src}" alt="Screenshot ${i + 1}">`
+        : shotMissing(k) ? `<span class="plus">!</span>non trovata`
+        : `<span class="spin"></span>`}
       ${editable ? `<button class="x" data-rmshot="${i}">×</button>` : ""}</div>`;
   });
   if (editable && ks.length < MAX_SHOTS)
-    tiles.push(`<div class="shot" data-addshot><span class="plus">+</span>Aggiungi</div>`);
-  return `<div class="shots" style="grid-template-columns:repeat(${Math.min(3, Math.max(1, tiles.length))},1fr)">${tiles.join("")}</div>`;
+    tiles.push(`<div class="shot drop" data-addshot><span class="plus">+</span>Aggiungi<span class="dhint">o trascina</span></div>`);
+  return `<div class="shots${editable ? " dz" : ""}" style="grid-template-columns:repeat(${Math.min(3, Math.max(1, tiles.length))},1fr)">${tiles.join("")}</div>`;
 }
 
 function kpi(k, v, d, tone, pct) {
@@ -1022,11 +1155,30 @@ function insightList(P) {
 }
 
 /* ============ sheet: FASE 1, entrata ============ */
-function sheetEntry() {
-  const t = draft, s = t.setup ? SETUPS[t.setup] : null, isBT = t.mode === "backtest";
-  const seqOK = t.seq === "full" || (t.seq === "partial" && gatesOf(t).some(g => !t.gates?.[g.k]));
+/* one source of truth, so the live refresh and the full render can never disagree */
+function draftState(t) {
+  const isBT = t.mode === "backtest";
   const dtv = isBT ? t.dayType : S.days[t.date];
-  const ready = dtv && t.setup && t.dir && seqOK && has(t.entry) && has(t.stop) && has(t.target) && (!isBT || t.reasoning.trim().length > 3);
+  const seqOK = t.seq === "full" || (t.seq === "partial" && gatesOf(t).some(g => !t.gates?.[g.k]));
+  const reasonOK = !isBT || (t.reasoning || "").trim().length > 3;
+  const pricesOK = has(t.entry) && has(t.stop) && has(t.target);
+  const outcomeOK = !!t.outcome && (t.outcome !== "manual" || !!t.manualReason);
+  const ready = !!dtv && !!t.setup && !!t.dir && seqOK && pricesOK && reasonOK && outcomeOK;
+  const label = ready ? (editMode ? "Salva modifiche" : "Salva il trade")
+    : !dtv ? "Scegli il tipo di giornata"
+    : !t.setup || !t.dir ? "Scegli setup e direzione"
+    : !t.seq ? "Rispondi sulla sequenza"
+    : !seqOK ? "Segna cosa mancava"
+    : !pricesOK ? "Compila i tre prezzi"
+    : !reasonOK ? "Scrivi il ragionamento"
+    : t.outcome === "manual" && !t.manualReason ? "Indica perché sei uscito"
+    : "Scegli l'esito";
+  return { isBT, dtv, seqOK, ready, label };
+}
+
+function sheetEntry() {
+  const t = draft, s = t.setup ? SETUPS[t.setup] : null;
+  const { isBT, dtv, seqOK } = draftState(t);
 
   let h = `<div class="hd"><h2>${editMode ? "Modifica trade" : isBT ? "Backtest · nuova entrata" : "Nuova entrata"}</h2><button data-x>Annulla</button></div>`;
 
@@ -1070,10 +1222,7 @@ function sheetEntry() {
        </div>
        <div class="tiny mut" style="margin:12px 0 16px">${esc(s.stopHint(t.dir))}. ${esc(s.targetHint(t.dir))}</div>
        ${calcStrip(t)}
-       ${(() => { const m = riskMoney(t), pc = riskAccountPct(t);
-          if (!m) return "";
-          const over = pc != null && pc > n(S.cfg.riskPct) + 0.05;
-          return `<div class="flag ${over ? "" : "info"}" style="margin-top:14px"><span>Rischio <b>$${m.toFixed(2)}</b>${pc != null ? ` · <b>${pc.toFixed(2)}%</b> del conto` : ""}${over ? `. Oltre il ${S.cfg.riskPct}% previsto.` : ""}</span></div>`; })()}
+       <div data-risk style="margin-top:14px">${riskFlag(t)}</div>
        <div class="grid2" style="margin-top:18px">
          <div><div class="lbl">Size</div><div class="row" style="gap:8px">
            <button class="btn ghost" data-size="-1" style="padding:15px 18px">−</button>
@@ -1082,7 +1231,7 @@ function sheetEntry() {
          <div><div class="lbl">${isBT ? "Ora della barra" : "Ora"}</div><input class="num" type="time" data-f="time" value="${esc(t.time)}"></div>
        </div>
        ${isBT ? `<div style="margin-top:14px"><div class="lbl">Data storica</div><input type="date" data-f="histDate" value="${esc(t.histDate)}"></div>` : ""}
-       ${!inRTH(t) ? `<div class="flag" style="margin-top:14px"><span>Fuori dalla finestra RTH (${esc(S.cfg.rthStart)}–${esc(S.cfg.rthEnd)}).</span></div>` : ""}`);
+       <div data-rth style="margin-top:14px">${rthFlag(t)}</div>`);
 
     if (isBT) h += sect("Il ragionamento",
       `<div class="lbl">Perché questo setup era valido? Cosa ti ha convinto?</div>
@@ -1118,15 +1267,8 @@ function sheetEntry() {
     }
   }
 
-  const outcomeOK = t.outcome && (t.outcome !== "manual" || t.manualReason);
-  const readyAll = ready && outcomeOK;
-  h += `</div><button class="btn lg full" data-savedraft ${readyAll ? "" : "disabled"} style="margin-top:8px">${readyAll ? (editMode ? "Salva modifiche" : "Salva il trade")
-    : !dtv ? "Scegli il tipo di giornata"
-    : !t.setup || !t.dir ? "Scegli setup e direzione"
-    : !t.seq ? "Rispondi sulla sequenza"
-    : !seqOK ? "Segna cosa mancava"
-    : !has(t.entry) || !has(t.stop) || !has(t.target) ? (isBT ? "Compila prezzi e ragionamento" : "Compila i tre prezzi")
-    : "Scegli l'esito"}</button>`;
+  const ds = draftState(t);
+  h += `</div><button class="btn lg full" data-savedraft ${ds.ready ? "" : "disabled"} style="margin-top:8px">${esc(ds.label)}</button>`;
   if (editMode) h += `<button class="btn danger full" data-del="${t.id}" style="margin-top:10px">Elimina il trade</button>`;
   return h;
 }
@@ -1313,7 +1455,7 @@ function viewOggi() {
 
 /* ============ CALENDARIO ============ */
 function viewCalendario() {
-  const base = S.cal ? new Date(S.cal + "-01T12:00:00") : new Date();
+  const base = new Date((S.cal || today().slice(0, 7)) + "-01T12:00:00");
   const y = base.getFullYear(), m = base.getMonth();
   const key = `${y}-${String(m + 1).padStart(2, "0")}`;
   const first = new Date(y, m, 1), days = new Date(y, m + 1, 0).getDate();
@@ -1434,7 +1576,8 @@ function dayLogCard(t) {
       ${v.map(x => `<div class="flag" style="margin-top:8px"><span>${esc(x)}</span></div>`).join("")}
       ${ks.length ? `<div class="dlshots" style="margin-top:30px;--n:${Math.min(3, ks.length)}">${ks.map((k, i) => {
           const src = shotURL(k);
-          return src ? `<div class="dlshot" data-viewshot="${esc(k)}"><img src="${src}" alt="Screenshot ${i + 1}"></div>` : "";
+          if (src) return `<div class="dlshot" data-viewshot="${esc(k)}"><img src="${src}" alt="Screenshot ${i + 1}"></div>`;
+          return `<div class="dlshot ph">${shotMissing(k) ? "Immagine non trovata" : '<span class="spin"></span>'}</div>`;
         }).join("")}</div>` : `<div class="tiny mut" style="margin-top:14px">Nessuno screenshot caricato.</div>`}
       <div class="lbl" style="margin-top:22px">Note e ragionamento</div>
       <div class="tiny mut" style="margin:4px 0 8px">Cosa stavi pensando, cosa hai notato, cosa cambieresti. Il coach le legge insieme ai trade.</div>
@@ -1473,7 +1616,7 @@ function viewCoach() {
     <button class="btn ghost" data-coach style="margin-top:12px">Rileggi adesso</button>`;
   else if (!S.cfg.apiKey) body = `<div class="mut">Aggiungi la chiave Claude in Impostazioni per ricevere la lettura scritta. Tutto il resto di questa pagina funziona senza.</div>`;
   else body = `<button class="btn" data-coach>Genera la prima lettura</button>`;
-  h += card("Il coach", body, c ? new Date(c.at).toLocaleDateString("it-IT", { day: "numeric", month: "long" }) : null);
+  h += card("Il coach", body, c ? new Date(c.at).toLocaleDateString("it-IT", { timeZone: TZ, day: "numeric", month: "long" }) : null);
 
   h += card("Esecuzione contro esito",
     `<div class="quad">${["edge", "dirty", "good", "bill"].map(k =>
@@ -1577,7 +1720,7 @@ document.addEventListener("click", async e => {
     return;
   }
   if (D.mon) {
-    const b = S.cal ? new Date(S.cal + "-01T12:00:00") : new Date();
+    const b = new Date((S.cal || today().slice(0, 7)) + "-01T12:00:00");
     b.setMonth(b.getMonth() + (+D.mon));
     S.cal = `${b.getFullYear()}-${String(b.getMonth() + 1).padStart(2, "0")}`;
     S.dayView = null;
@@ -1618,7 +1761,7 @@ document.addEventListener("click", async e => {
     if (!found) return;
     draft = JSON.parse(JSON.stringify(found));
     editMode = true;
-    await loadShots(draft);
+    await loadShots([draft]);
     sheet = "entry";
     return render();
   }
@@ -1655,14 +1798,10 @@ document.addEventListener("click", async e => {
       return renderSheet();
     }
     if ("addshot" in D) {
-      const img = await pickImage();
-      if (!img) return;
-      try {
-        if (!Array.isArray(draft.shots)) draft.shots = shotKeys(draft);
-        if (draft.shots.length >= MAX_SHOTS) return;
-        draft.shots.push(await putShot(img));
-        renderSheet();
-      } catch (err) { alert(err.message); }
+      const el = $("#picker");
+      el.value = "";
+      el.onchange = () => { if (el.files.length) addShots(el.files); };
+      el.click();
       return;
     }
     if ("savedraft" in D) {
@@ -1710,7 +1849,7 @@ document.addEventListener("click", async e => {
     for (const t of S.trades)
       for (const k of shotKeys(t))
         if (!String(k).startsWith("data:")) imgs[k] = IMG[k] !== undefined ? IMG[k] : await DB.get("img:" + k);
-    const blob = new Blob([JSON.stringify({ v: 2, cfg: S.cfg, trades: S.trades, days: S.days, imgs }, null, 1)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ v: 3, cfg: S.cfg, trades: S.trades, days: S.days, va: S.va, coach: S.coach, imgs }, null, 1)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `alban-trading-journal-${today()}.json`;
@@ -1727,8 +1866,10 @@ document.addEventListener("click", async e => {
           const j = JSON.parse(fr.result);
           if (!Array.isArray(j.trades)) throw 0;
           S.cfg = { ...DEFAULT_CFG, ...(j.cfg || {}) };
-          S.trades = j.trades; S.days = j.days || {};
+          S.trades = j.trades; S.days = j.days || {}; S.va = j.va || {};
+          IMGMISS.clear();
           for (const [k, v] of Object.entries(j.imgs || {})) { IMG[k] = v; await DB.set("img:" + k, v); }
+          if (j.coach) { S.coach = j.coach; await DB.set("coach", S.coach); }
           await save(); alert("Backup ripristinato."); render();
         } catch (_) { alert("Il file non è leggibile."); }
       };
@@ -1739,7 +1880,7 @@ document.addEventListener("click", async e => {
   if ("wipe" in D) {
     if (!confirm("Cancellare tutti i trade? Non si torna indietro.")) return;
     for (const t of S.trades) await dropShots(t);
-    S.trades = []; S.days = {}; await save(); return render();
+    S.trades = []; S.days = {}; S.va = {}; IMGMISS.clear(); await save(); return render();
   }
 });
 
@@ -1752,7 +1893,7 @@ setInterval(() => {
   if (S.tab !== "dashboard" || sheet) return;
   const a = document.activeElement;
   if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
-  const now = new Date().toTimeString().slice(0, 5) + "|" + (cooldown() || "");
+  const now = nowHM() + "|" + (cooldown() || "");
   if (now === _lastTick) return;
   _lastTick = now;
   render();
@@ -1765,6 +1906,43 @@ document.addEventListener("visibilitychange", () => {
 document.getElementById("burger").addEventListener("click", () => document.body.classList.toggle("drawer"));
 document.getElementById("scrim").addEventListener("click", () => document.body.classList.remove("drawer"));
 
+/* drag-and-drop and paste straight onto the screenshot grid */
+const dzOf = e => (e.target.closest ? e.target.closest(".shots.dz") : null);
+document.addEventListener("dragenter", e => { if (draft && dzOf(e)) e.preventDefault(); });
+document.addEventListener("dragover", e => {
+  const dz = draft && dzOf(e);
+  if (!dz) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  dz.classList.add("over");
+});
+document.addEventListener("dragleave", e => {
+  const dz = dzOf(e);
+  if (dz && !dz.contains(e.relatedTarget)) dz.classList.remove("over");
+});
+document.addEventListener("drop", e => {
+  const dz = draft && dzOf(e);
+  if (!dz) return;
+  e.preventDefault();
+  dz.classList.remove("over");
+  const f = e.dataTransfer?.files;
+  if (f && f.length) addShots(f);
+});
+/* dropping anywhere else must not make the browser navigate away from the journal */
+document.addEventListener("dragover", e => { if (!dzOf(e)) e.preventDefault(); });
+document.addEventListener("drop", e => { if (!dzOf(e)) e.preventDefault(); });
+
+document.addEventListener("paste", e => {
+  if (!draft || !sheet) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  const files = [...(e.clipboardData?.items || [])]
+    .filter(i => i.kind === "file" && i.type.startsWith("image/"))
+    .map(i => i.getAsFile())
+    .filter(Boolean);
+  if (files.length) { e.preventDefault(); addShots(files); }
+});
+
 /* inputs */
 document.addEventListener("blur", e => {
   const id = e.target?.dataset?.daynote;
@@ -1774,30 +1952,37 @@ document.addEventListener("blur", e => {
   if (t.note !== e.target.value) { t.note = e.target.value; save(); }
 }, true);
 
+/* refresh every derived panel in the sheet without re-rendering the inputs the user is typing into */
+function refreshDraftDerived() {
+  if (!draft) return;
+  const st = $(".sheet");
+  if (!st) return;
+  const calc = st.querySelector(".calc");
+  if (calc) calc.outerHTML = calcStrip(draft);
+  const rf = st.querySelector("[data-rth]");
+  if (rf) rf.innerHTML = rthFlag(draft);
+  const kf = st.querySelector("[data-risk]");
+  if (kf) kf.innerHTML = riskFlag(draft);
+  const btn = st.querySelector("[data-savedraft]");
+  if (btn) {
+    const ds = draftState(draft);
+    btn.disabled = !ds.ready;
+    btn.textContent = ds.label;
+  }
+}
+
 document.addEventListener("input", e => {
   const D = e.target.dataset;
   if (D.f && draft) {
     draft[D.f] = e.target.value;
-    if (["entry", "stop", "target", "exitPrice", "time"].includes(D.f)) {
-      const st = $(".sheet");
-      const calc = st?.querySelector(".calc");
-      if (calc) calc.outerHTML = calcStrip(draft);
-      const btn = st?.querySelector("[data-savedraft]");
-      if (btn) {
-        const isBT = draft.mode === "backtest";
-        const dtv = isBT ? draft.dayType : S.days[draft.date];
-        const ok = dtv && draft.setup && draft.dir && has(draft.entry) && has(draft.stop) && has(draft.target) && (!isBT || draft.reasoning.trim().length > 3)
-          && draft.outcome && (draft.outcome !== "manual" || draft.manualReason);
-        btn.disabled = !ok;
-      }
-    }
+    refreshDraftDerived();
   }
 
   if (D.c) {
     const v = e.target.type === "checkbox" ? e.target.checked
       : ["maxTrades", "riskPct", "dailyLossR", "minRR1", "minRR2", "pointValue", "accountSize", "cooldownMin"].includes(D.c) ? n(e.target.value)
         : e.target.value;
-    S.cfg[D.c] = v; save();
+    S.cfg[D.c] = v; queueSave();
   }
 });
 
@@ -1810,6 +1995,8 @@ document.addEventListener("input", e => {
     S.days = st.days || {};
     S.va = st.va || {};
   }
+  const meta = await DB.get("state_meta");
+  stateRev = (meta && meta.rev) || 0;
   S.coach = (await DB.get("coach")) || null;
   S.stg = await storageInfo();
   render();
