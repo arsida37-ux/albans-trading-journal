@@ -177,9 +177,9 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
 .chip{padding:10px 14px;border-radius:9px;border:1px solid var(--line2);background:var(--surf2);font-size:12.5px;color:var(--dim);font-weight:550;transition:.14s}
 .chip:hover{color:var(--acc-hi);border-color:var(--acc-b)}
 .chip.on{border-color:transparent;background:linear-gradient(180deg,var(--acc-hi),var(--acc));color:#fff;font-weight:600}
-.chip.on[data-tone=g]{border-color:var(--grn-b);background:var(--grn-d);color:var(--grn)}
-.chip.on[data-tone=r]{border-color:var(--red-b);background:var(--red-d);color:var(--red)}
-.chip.on[data-tone=a]{border-color:var(--amb-b);background:var(--amb-d);color:var(--amb)}
+.chip.on[data-tone=g]{border-color:transparent;background:linear-gradient(180deg,#4FCF94,var(--grn));color:#fff}
+.chip.on[data-tone=r]{border-color:transparent;background:linear-gradient(180deg,#F4767E,var(--red));color:#fff}
+.chip.on[data-tone=a]{border-color:transparent;background:linear-gradient(180deg,#F0C25E,var(--amb));color:#0F1226}
 
 /* derived */
 .derived{display:flex;align-items:center;gap:9px;background:var(--acc-gl);border:1px solid var(--acc-b);
@@ -323,25 +323,30 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
 @media (max-width:640px){ .pxg{grid-template-columns:1fr 1fr} }
 
 /* calendar */
-.calhd{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px}
+.calhd{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--line)}
 .calhd span{font-size:10px;text-align:center;color:var(--dim2);font-weight:600;text-transform:uppercase;letter-spacing:.08em}
 .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
 .cal .cell{aspect-ratio:1/.46;border-radius:11px;border:1px solid var(--line);background:var(--surf2);box-shadow:var(--sh-sm);
-  padding:7px 9px;display:flex;flex-direction:column;align-items:flex-start;transition:.14s;width:100%}
-.cal .cell.pad{background:transparent;border-color:transparent;pointer-events:none}
-.cal .cell.none{opacity:.4}
+  padding:7px 9px;display:flex;flex-direction:column;align-items:flex-start;transition:.14s;width:100%;position:relative}
+.cal .cell.pad{background:transparent;border-color:transparent;pointer-events:none;box-shadow:none}
+.cal .cell.none{background:transparent;border-style:dashed;border-color:var(--line);box-shadow:none}
+.cal .cell.none .dn{color:var(--dim2)}
 .cal .cell:disabled{cursor:default}
 .cal .cell.win{background:linear-gradient(155deg,var(--grn-d),var(--surf2) 130%);border-color:var(--grn-b)}
 .cal .cell.loss{background:linear-gradient(155deg,var(--red-d),var(--surf2) 130%);border-color:var(--red-b)}
+.cal .cell.today{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),var(--sh-sm)}
+.cal .cell.today.win{box-shadow:0 0 0 1px var(--acc),0 0 0 3px var(--grn-d)}
+.cal .cell.today.loss{box-shadow:0 0 0 1px var(--acc),0 0 0 3px var(--red-d)}
 .cal .cell:not(.pad):not(:disabled):hover{border-color:var(--acc);cursor:pointer;transform:translateY(-1px);box-shadow:var(--sh-md)}
 .cal .cellhd{display:flex;justify-content:space-between;align-items:center;width:100%}
 .cal .dn{font-size:10.5px;color:var(--dim2);font-weight:600}
+.cal .cell.today .dn{color:var(--acc-hi);font-weight:800}
 .cal .dct{font-family:var(--mono);font-size:9px;color:var(--dim2);font-weight:700}
 .cal .cell.tilt .dct{color:var(--amb)}
 .cal .cell.win .dn{color:#8FDCB6}
 .cal .cell.loss .dn{color:#F3A5A8}
 .cal .dr{font-family:var(--mono);font-size:11px;font-weight:700;margin-top:auto;letter-spacing:-.04em}
-.cal .dv{font-size:8.5px;color:var(--red);font-weight:700;margin-top:1px}
+.cal .dv{font-size:8px;color:#F3A5A8;font-weight:700;margin-top:3px;padding:1px 5px;border-radius:4px;background:rgba(242,85,92,.18);align-self:flex-start}
 
 /* day-log: large stacked screenshots, one per trade */
 /* thumbnails are a fixed size whatever the count, so one shot does not fill the page.
@@ -353,6 +358,35 @@ main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column
 .dlshot img{width:100%;aspect-ratio:16/10;object-fit:cover;display:block}
 .grow{flex:1}
 .dlcard{overflow:hidden}
+
+/* custom date picker: native inputs can't be restyled, so this matches the app exactly */
+.datetrig{display:flex;align-items:center;gap:12px;width:100%;padding:16px 18px;border-radius:12px;
+  background:var(--surf2);border:1px solid var(--line2);color:var(--txt);font-size:15px;font-weight:650;transition:.14s}
+.datetrig:hover{border-color:var(--acc-b);background:var(--surf3)}
+.datetrig svg:first-child{color:var(--dim);flex:none}
+.datetrig span{flex:1;text-align:left;text-transform:capitalize}
+.dpchev{color:var(--dim2);transition:transform .16s;flex:none}
+.dpchev.on{transform:rotate(180deg);color:var(--acc-hi)}
+
+.dppop{margin-top:10px;padding:14px;background:var(--surf2);border:1px solid var(--line2);border-radius:13px;box-shadow:var(--sh-md);max-width:320px}
+.dphd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.dphd span{font-size:12.5px;font-weight:700;text-transform:capitalize;letter-spacing:-.01em}
+.dphd button{width:26px;height:26px;border-radius:7px;border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--dim);transition:.14s}
+.dphd button:hover{border-color:var(--acc);color:var(--acc-hi);background:var(--acc-gl)}
+.dphd button svg{width:11px;height:11px}
+.dpwd{display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:6px}
+.dpwd span{text-align:center;font-size:9px;color:var(--dim2);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.dpgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.dpcell{aspect-ratio:1;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:11.5px;font-weight:650;color:var(--txt);background:var(--surf3);border:1px solid var(--line);transition:.14s}
+.dpcell.pad{background:transparent;border-color:transparent;pointer-events:none}
+.dpcell:not(.pad):hover{border-color:var(--acc);transform:translateY(-1px)}
+.dpcell.today{box-shadow:0 0 0 1.5px var(--acc) inset;color:var(--acc-hi);font-weight:800}
+.dpcell.sel{background:linear-gradient(180deg,var(--acc-hi),var(--acc));border-color:transparent;color:#fff;
+  box-shadow:0 1px 0 rgba(255,255,255,.18) inset,var(--sh-acc)}
+.dptoday{width:100%;margin-top:12px;padding:8px;border-radius:8px;border:1px solid var(--line2);color:var(--dim);
+  font-size:11px;font-weight:650;text-align:center;transition:.14s}
+.dptoday:hover{border-color:var(--acc);color:var(--acc-hi);background:var(--acc-gl)}
 .dlgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 @media (max-width:560px){ .dlgrid{grid-template-columns:1fr} }
 .dlbox{background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:14px 15px}
@@ -560,7 +594,7 @@ const DEFAULT_CFG = {
 };
 
 let S = { cfg: { ...DEFAULT_CFG }, trades: [], days: {}, va: {}, tab: "dashboard", openTrade: null, sessLimit: 12, cal: null, dayView: null, dlOpen: {}, coach: null };
-let draft = null, editing = null, sheet = null, busy = {}, editSec = null, editMode = false;
+let draft = null, editing = null, sheet = null, busy = {}, editSec = null, editMode = false, dpOpen = false, dpMonth = null;
 
 /* images live under their own keys so the state blob stays small */
 const IMG = {};
@@ -738,12 +772,11 @@ const SETUPS = {
     ideal: "trending",
     idealLabel: "Giornate trending / momentum",
     gates: [
-      { k: "g1", t: d => `Rottura della ${d === "long" ? "VAH" : "VAL"} di ieri in RTH` },
-      { k: "g2", t: () => "Accettazione: almeno una chiusura M5 fuori dalla Value Area", crit: true },
-      { k: "g3", t: () => "Pullback sul VWAP" },
-      { k: "g4", t: () => "Assorbimento sul VWAP" },
-      { k: "g5", t: () => "Candela di iniziativa nella direzione del breakout", crit: true },
-      { k: "g6", t: () => "Volume e delta a favore della direzione" }
+      { k: "g1", t: () => "Cambio di struttura sul M5", crit: true },
+      { k: "g2", t: () => "Ritracciamento sul VWAP" },
+      { k: "g3", t: () => "Assorbimento con i big trader" },
+      { k: "g4", t: () => "Assorbimento normale" },
+      { k: "g5", t: () => "Candela di iniziativa nella direzione del breakout", crit: true }
     ],
     ref: d => `Rottura ${d === "long" ? "VAH" : "VAL"} di ieri`,
     stopHint: d => `Stop ${d === "long" ? "sotto" : "sopra"} il ${d === "long" ? "minimo" : "massimo"} di assorbimento`,
@@ -1198,6 +1231,33 @@ function draftState(t) {
   return { isBT, dtv, seqOK, ready, label };
 }
 
+function datePicker(selected) {
+  const base = new Date((dpMonth || selected.slice(0, 7)) + "-01T12:00:00");
+  const y = base.getFullYear(), m = base.getMonth();
+  const first = new Date(y, m, 1), daysInMonth = new Date(y, m + 1, 0).getDate();
+  const lead = (first.getDay() + 6) % 7;
+  const label = first.toLocaleDateString("it-IT", { month: "long", year: "numeric" });
+  const todayStr = today();
+
+  let cells = "";
+  for (let i = 0; i < lead; i++) cells += `<div class="dpcell pad"></div>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    cells += `<button class="dpcell ${ds === selected ? "sel" : ""} ${ds === todayStr ? "today" : ""}" data-pickdate="${ds}">${d}</button>`;
+  }
+
+  return `<div class="dppop">
+    <div class="dphd">
+      <button data-dpmon="-1" aria-label="Mese precedente"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <span>${esc(label.charAt(0).toUpperCase() + label.slice(1))}</span>
+      <button data-dpmon="1" aria-label="Mese successivo"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
+    </div>
+    <div class="dpwd">${["L", "M", "M", "G", "V", "S", "D"].map(x => `<span>${x}</span>`).join("")}</div>
+    <div class="dpgrid">${cells}</div>
+    <button class="dptoday" data-pickdate="${todayStr}">Vai a oggi</button>
+  </div>`;
+}
+
 function sheetEntry() {
   const t = draft, s = t.setup ? SETUPS[t.setup] : null;
   const { isBT, dtv, seqOK } = draftState(t);
@@ -1205,6 +1265,14 @@ function sheetEntry() {
   let h = `<div class="hd"><h2>${editMode ? "Modifica trade" : isBT ? "Backtest · nuova entrata" : "Nuova entrata"}</h2><button data-x>Annulla</button></div>`;
 
   h += `<div class="sflow">`;
+  h += sect("Data",
+    `<button class="datetrig" data-opendp>
+       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>
+       <span>${esc(lc1(dLabel(t.date)))}</span>
+       <svg class="dpchev ${dpOpen ? "on" : ""}" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+     </button>
+     ${dpOpen ? datePicker(t.date) : ""}
+     <div class="tiny mut" style="margin-top:10px">Cambia la data per registrare un trade passato o di backtest. Il tipo di giornata segue la data scelta.</div>`);
   h += sect("Che tipo di giornata è?",
     `<div class="pick">${Object.entries(DAY_TYPES).map(([k, l]) =>
       `<button data-daytype="${k}" class="${dtv === k ? "on" : ""}">${l}<small>${SETUPS[setupForDay(k)].name}</small></button>`).join("")}</div>`);
@@ -1309,7 +1377,7 @@ function renderSheet() {
   o.querySelector(".sheet").innerHTML = body.slice(0, i) + '<div class="sb">' + body.slice(i) + "</div>";
 }
 function closeSheet() {
-  sheet = null; draft = null; editing = null; editSec = null; editMode = false;
+  sheet = null; draft = null; editing = null; editSec = null; editMode = false; dpOpen = false; dpMonth = null;
   const o = $(".ovl"); if (o) o.remove();
 }
 
@@ -1488,6 +1556,7 @@ function viewCalendario() {
   const monthTrades = closed(live()).filter(t => (t.date || "").startsWith(key));
   const monthR = monthTrades.reduce((a, t) => a + realisedR(t), 0);
 
+  const todayStr = today();
   let cells = "";
   for (let i = 0; i < lead; i++) cells += `<div class="cell pad"></div>`;
   for (let d = 1; d <= days; d++) {
@@ -1497,7 +1566,8 @@ function viewCalendario() {
     const viol = list.filter(t => !clean(t)).length;
     const cls = !list.length ? "none" : r > 0.05 ? "win" : r < -0.05 ? "loss" : "";
     const tilt = list.length > n(S.cfg.maxTrades) ? " tilt" : "";
-    cells += `<button class="cell ${cls}${tilt}" data-cal="${ds}" ${list.length ? "" : "disabled"}>
+    const isToday = ds === todayStr ? " today" : "";
+    cells += `<button class="cell ${cls}${tilt}${isToday}" data-cal="${ds}" ${list.length ? "" : "disabled"}>
       <span class="cellhd"><span class="dn">${d}</span>${list.length ? `<span class="dct">${list.length}×</span>` : ""}</span>
       ${list.length ? `<span class="dr ${r > 0 ? "p" : r < 0 ? "n" : "mut"}">${fmtR(r)}</span>
         ${viol ? `<span class="dv">${viol} viol.</span>` : ""}` : ""}
@@ -1769,6 +1839,24 @@ document.addEventListener("click", async e => {
   }
   if ("x" in D) return closeSheet();
 
+  /* custom date picker */
+  if ("opendp" in D) {
+    dpOpen = !dpOpen;
+    if (dpOpen && draft) dpMonth = draft.date.slice(0, 7);
+    return renderSheet();
+  }
+  if (D.dpmon) {
+    const b = new Date((dpMonth || today().slice(0, 7)) + "-01T12:00:00");
+    b.setMonth(b.getMonth() + (+D.dpmon));
+    dpMonth = `${b.getFullYear()}-${String(b.getMonth() + 1).padStart(2, "0")}`;
+    return renderSheet();
+  }
+  if (D.pickdate && draft) {
+    draft.date = D.pickdate;
+    dpOpen = false;
+    return renderSheet();
+  }
+
   /* day type */
   if (D.daytype) {
     if (draft && draft.mode === "backtest") {
@@ -1780,7 +1868,8 @@ document.addEventListener("click", async e => {
     /* trades already logged keep the day type that was current when they were logged */
     S.days[d] = S.days[d] === D.daytype ? null : D.daytype;
     editSec = null;
-    await save(); return render();
+    render(); save();
+    return;
   }
 
   /* new / close */
@@ -1822,9 +1911,12 @@ document.addEventListener("click", async e => {
       e.stopPropagation();
       if (!Array.isArray(draft.shots)) draft.shots = shotKeys(draft);
       const [k] = draft.shots.splice(+D.rmshot, 1);
-      if (k && !String(k).startsWith("data:")) { delete IMG[k]; await DB.del("img:" + k); }
-      await save();
-      return renderSheet();
+      renderSheet();
+      (async () => {
+        if (k && !String(k).startsWith("data:")) { delete IMG[k]; await DB.del("img:" + k); }
+        await save();
+      })();
+      return;
     }
     if ("addshot" in D) {
       const el = $("#picker");
@@ -1843,16 +1935,20 @@ document.addEventListener("click", async e => {
         draft.closedAt = Date.now();
         S.trades.push(draft);
       }
-      await save(); closeSheet(); return render();
+      closeSheet(); render();
+      save();
+      return;
     }
   }
 
   /* detail actions */
   if (D.del) {
     if (!confirm("Eliminare questo trade?")) return;
-    await dropShots(S.trades.find(t => t.id === D.del));
-    S.trades = S.trades.filter(t => t.id !== D.del);
-    await save(); closeSheet(); return render();
+    const t = S.trades.find(x => x.id === D.del);
+    S.trades = S.trades.filter(x => x.id !== D.del);
+    closeSheet(); render();
+    dropShots(t); save();
+    return;
   }
   if (D.vision) {
     if (!draft?.shots?.entrata) return alert("Serve lo screenshot dell'entrata.");
@@ -2041,7 +2137,7 @@ document.addEventListener("input", e => {
   const D = e.target.dataset;
   if (D.f && draft) {
     draft[D.f] = e.target.value;
-    refreshDraftDerived();
+    if (D.f !== "date") refreshDraftDerived();
   }
 
   if (D.c) {
